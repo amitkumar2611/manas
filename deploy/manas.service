@@ -1,0 +1,23 @@
+# systemd unit — run MANAS as an always-on service on a laptop/home server/SLES node.
+# Install: sudo cp deploy/manas.service /etc/systemd/system/ && sudo systemctl enable --now manas
+[Unit]
+Description=MANAS AI Operating System
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/manas
+Environment=MANAS_HOME=/var/lib/manas
+EnvironmentFile=-/etc/manas.env
+ExecStart=/opt/manas/.venv/bin/uvicorn manas.api:app --host 127.0.0.1 --port 8420
+Restart=on-failure
+RestartSec=5
+# Hardening (defense in depth alongside the ToolGate):
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/manas
+
+[Install]
+WantedBy=multi-user.target

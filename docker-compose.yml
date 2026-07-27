@@ -1,0 +1,26 @@
+# Full local-first stack: MANAS kernel + local Ollama for offline inference.
+# `docker compose up` gives you a fully local AI OS with zero cloud keys.
+services:
+  manas:
+    build: .
+    ports: ["8420:8420"]
+    volumes: ["manas-data:/data"]
+    environment:
+      MANAS_PROVIDER: ollama        # or: echo (no LLM) | anthropic | copilot
+      MANAS_OLLAMA_URL: http://ollama:11434
+      MANAS_MODEL: llama3.1
+    depends_on: [ollama]
+
+  ollama:
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes: ["ollama-models:/root/.ollama"]
+    # GPU is optional. Uncomment to use an NVIDIA GPU for faster inference:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+
+volumes:
+  manas-data:
+  ollama-models:

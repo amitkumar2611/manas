@@ -1,0 +1,37 @@
+[project]
+name = "manas"
+version = "0.7.0"
+description = "MANAS - Modular Autonomous Neural Agent System: an AI Operating System kernel"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",          # HTTP presentation layer
+    "uvicorn>=0.30",           # ASGI server
+    "pydantic>=2.7",           # typed schemas everywhere
+    "pydantic-settings>=2.3",  # env-driven config (local-first defaults)
+    "typer>=0.12",             # CLI presentation layer
+    "httpx>=0.27",             # provider adapters (no vendor SDKs in core)
+    "rich>=13.7",              # CLI rendering
+]
+
+[project.optional-dependencies]
+perception = [
+    "pillow>=10",          # OCR image loading
+    "pytesseract>=0.3",    # OCR (needs apt: tesseract-ocr)
+    "icalendar>=5.0",      # local-first calendar (.ics)
+]
+perception-full = [
+    "mss>=9",              # screenshots (needs a display)
+    "playwright>=1.45",    # browser_act (then: playwright install chromium)
+    "faster-whisper>=1.0", # local STT
+    "pyttsx3>=2.90",       # TTS via OS engine
+]
+
+[project.scripts]
+manas = "manas.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["manas*"]
