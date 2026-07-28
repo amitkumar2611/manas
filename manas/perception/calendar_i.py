@@ -7,11 +7,19 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from icalendar import Calendar, Event as IcsEvent
-
 from manas.kernel.config import settings
 from manas.kernel.errors import ManasError
 from manas.kernel.registry import tools
+
+
+def _ics():
+    """icalendar is an optional backend: import late, fail honestly."""
+    try:
+        from icalendar import Calendar, Event as IcsEvent
+    except ImportError as e:
+        raise ManasError('calendar needs: pip install "manas[perception]" '
+                         "(or: pip install icalendar)") from e
+    return Calendar, IcsEvent
 
 
 def _caldir() -> Path:
@@ -27,6 +35,7 @@ class CalendarRead:
     risk_level = "SAFE"
 
     async def __call__(self, days: int = 7) -> list[dict]:
+        Calendar, _ = _ics()
         now = datetime.now().astimezone()
         horizon = now + timedelta(days=days)
         out = []
@@ -53,6 +62,7 @@ class CalendarAdd:
 
     async def __call__(self, summary: str, start_iso: str,
                        duration_min: int = 30, location: str = "") -> dict:
+        Calendar, IcsEvent = _ics()
         try:
             start = datetime.fromisoformat(start_iso)
         except ValueError as e:

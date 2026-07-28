@@ -48,7 +48,8 @@
 ## Quickstart
 
 ```bash
-pip install -e .
+python3.12 -m venv .venv && source .venv/bin/activate   # needs Python >= 3.12
+pip install -e .               # core: chat, plan, run, ingest, ask, memory
 cp .env.template .env          # optional — defaults work offline
 
 manas status                   # kernel + registered components
@@ -62,11 +63,12 @@ manas ingest tickets.json --tickets           # Jira-shaped ticket JSON
 manas ask "how does auth work in this repo?"  # RAG with source attribution
 manas sync jira HPCM-1234      # live ticket -> knowledge (needs Jira creds)
 manas sync github owner/repo   # repo + open PRs -> knowledge
-manas ocr screenshot.png       # screen understanding (Tesseract)
 manas browse https://url       # page -> readable text
+# the next three need: pip install -e ".[perception]"  (+ brew/apt tesseract-ocr)
+manas ocr screenshot.png       # screen understanding (Tesseract)
 manas agenda                   # local-first calendar (.ics)
 manas calendar-add "standup" 2026-07-29T10:00:00+05:30
-# optional heavy backends: pip install "manas[perception-full]"
+# screenshots / live browser / voice: pip install -e ".[perception-full]"
 manas doctor                   # deep health checks, exit 1 on failure
 manas traces --n 3             # recent span trees (agent -> tool -> LLM)
 # scrape http://host:8420/metrics with Prometheus; /healthz for readiness

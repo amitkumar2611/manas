@@ -3,6 +3,7 @@ import asyncio
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from manas import __version__
@@ -48,14 +49,14 @@ def chat() -> None:
         reply = asyncio.run(agent.chat(msg, history))
         history += [{"role": "user", "content": msg},
                     {"role": "assistant", "content": reply}]
-        console.print(Panel(reply, title="manas", border_style="cyan"))
+        console.print(Panel(escape(reply), title="manas", border_style="cyan"))
 
 
 @app.command()
 def plan(goal: str) -> None:
     """Turn a goal into a phased, risk-labeled plan (saved to ~/.manas/plans)."""
     result = asyncio.run(PlannerAgent().plan(goal))
-    console.print(Panel(result, title="plan", border_style="magenta"))
+    console.print(Panel(escape(result), title="plan", border_style="magenta"))
 
 
 @app.command()
@@ -65,7 +66,7 @@ def remember(text: str, tier: str = "semantic", importance: float = 0.7) -> None
     from manas.memory.store import Record
     rid = get_store().write(Record(tier=tier, content=text,
                                      importance=importance, source="cli"))
-    console.print(f"stored [{tier}] id={rid}")
+    console.print(f"stored \\[{tier}] id={rid}")
 
 
 @app.command()
@@ -73,7 +74,7 @@ def recall(query: str, tier: str = None) -> None:  # type: ignore[assignment]
     """Query memory with scored retrieval."""
     from manas.memory import get_store
     for r in get_store().recall(query, tier=tier):
-        console.print(f"[{r.tier}] ({r.importance:.2f}) {r.content}")
+        console.print(f"\\[{r.tier}] ({r.importance:.2f}) {escape(r.content)}")
 
 
 @app.command()
@@ -101,16 +102,17 @@ def graphs() -> None:
     for f in sorted((settings.home / "plans").glob("graph-*.json")):
         d = json.loads(f.read_text())
         done = sum(t["status"] == "DONE" for t in d["tasks"])
-        console.print(f"{f.name}  {done}/{len(d['tasks'])} done  goal: {d['goal'][:60]}")
+        console.print(f"{f.name}  {done}/{len(d['tasks'])} done  "
+                      f"goal: {escape(d['goal'][:60])}")
 
 
 def _render_graph(g) -> None:
     icons = {"DONE": "[green]DONE[/]", "FAILED": "[red]FAIL[/]",
              "NEED_HUMAN": "[yellow]HUMAN[/]", "PENDING": "[dim]PEND[/]",
              "RUNNING": "RUN"}
-    lines = [f"goal: {g.goal}", f"saved: {g.path}"]
+    lines = [f"goal: {escape(g.goal)}", f"saved: {g.path}"]
     for t in g.tasks:
-        lines.append(f"{icons[t.status]:>18s}  {t.name}  (agent={t.agent}, "
+        lines.append(f"{icons[t.status]:>18s}  {escape(t.name)}  (agent={t.agent}, "
                      f"risk={t.risk_level}, attempts={t.attempts})")
     console.print(Panel("\n".join(lines), title=f"graph {g.id}",
                         border_style="magenta"))
@@ -132,7 +134,7 @@ def ingest(path: str, tickets: bool = typer.Option(False, "--tickets",
 def ask(question: str) -> None:
     """RAG answer over ingested knowledge, with source attribution."""
     from manas.agents.researcher import ResearcherAgent
-    console.print(Panel(asyncio.run(ResearcherAgent().ask(question)),
+    console.print(Panel(escape(asyncio.run(ResearcherAgent().ask(question))),
                         title="researcher", border_style="cyan"))
 
 
@@ -149,7 +151,7 @@ def sync(source: str, ref: str) -> None:
         else:
             console.print("[red]source must be 'jira' or 'github'[/]")
     except ManasError as e:
-        console.print(f"[red]sync failed:[/] {e}")
+        console.print(f"[red]sync failed:[/] {escape(str(e))}")
         raise typer.Exit(1)
 
 
@@ -157,7 +159,7 @@ def sync(source: str, ref: str) -> None:
 def ocr(path: str) -> None:
     """Read text out of an image (screenshot understanding)."""
     from manas.kernel.registry import tools as t
-    console.print(asyncio.run(t.get("ocr_image")()(path=path))["text"])
+    console.print(escape(asyncio.run(t.get("ocr_image")()(path=path))["text"]))
 
 
 @app.command()
@@ -165,7 +167,7 @@ def browse(url: str) -> None:
     """Fetch a URL as readable text."""
     from manas.kernel.registry import tools as t
     r = asyncio.run(t.get("browser_fetch")()(url=url))
-    console.print(Panel(r["text"][:2500], title=r["title"] or url,
+    console.print(Panel(escape(r["text"][:2500]), title=escape(r["title"] or url),
                         border_style="cyan"))
 
 
@@ -177,8 +179,8 @@ def agenda(days: int = 7) -> None:
     if not events:
         console.print("no events in window")
     for e in events:
-        console.print(f"{e['start']}  {e['summary']}"
-                      + (f"  @ {e['location']}" if e['location'] else ""))
+        console.print(f"{e['start']}  {escape(e['summary'])}"
+                      + (f"  @ {escape(e['location'])}" if e['location'] else ""))
 
 
 @app.command("calendar-add")
@@ -216,8 +218,8 @@ def traces(n: int = 3) -> None:
     from manas.kernel.trace import recent
 
     def render(sp, depth=0):
-        console.print(f"{'  ' * depth}{sp['name']} [{sp['status']}] "
-                      f"{sp['ms']}ms {sp['attrs']}")
+        console.print(f"{'  ' * depth}{sp['name']} \\[{sp['status']}] "
+                      f"{sp['ms']}ms {escape(str(sp['attrs']))}")
         for c in sp["children"]:
             render(c, depth + 1)
 
