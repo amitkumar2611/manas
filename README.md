@@ -76,8 +76,12 @@ manas remember "I prefer dark-themed HTML reports"
 manas recall "html reports"
 
 uvicorn manas.api:app --port 8420    # same kernel over HTTP
-python -m pytest tests/ -q
+python -m pytest tests/ -q           # 60 tests, no keys or network needed
 ```
+
+Full setup, the offline suite, and a staged runbook for testing against real
+providers and real systems: **[TESTING.md](TESTING.md)**. Deployment (Docker,
+compose, systemd, k8s): **[DEPLOY.md](DEPLOY.md)**.
 
 ## The hierarchical prompt system (`prompts/`)
 
