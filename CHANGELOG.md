@@ -18,3 +18,17 @@
   deep health checks (doctor, /healthz, /metrics, /traces)
 - P8 Learning: post-run reflection deltas -> episodic lessons -> injected
   into future plans; failures weighted above successes
+
+## 1.1.0 → 1.6.0 — second horizon (phases 9–14)
+- 1.1.0 P9  providers: retry/backoff, fallback chain, purpose routing,
+             token+cost counters, streaming interface
+- 1.2.0 P10 desktop control: APPROVAL tools, dry-run-first replay rule,
+             text never echoed into plans/audit
+- 1.3.0 P11 RBAC role ceilings enforced in ToolGate; personal/enterprise
+             stores split + Fernet-encrypted at rest; explicit-grant
+             cross-store recall
+- 1.4.0 P12 distributed workers over a SQLite lease table with node-death
+             recovery; k8s manifests (API + scaled workers on RWX PVC)
+- 1.5.0 P13 persistent watch registry + polling re-ingest with stale archival
+- 1.6.0 P14 MQTT sensor/actuator tools; always_gate hard rule in the kernel;
+             ToolGate hardened to read risk metadata from instances

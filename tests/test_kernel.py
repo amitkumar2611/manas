@@ -524,3 +524,304 @@ def test_failure_lessons_rank_higher():
     # importance mapping is the ranking lever: failures must outweigh successes
     assert 0.8 > 0.6 > 0.4  # failure > partial > success (documented invariant)
     assert LearningAgent.name == "learning"
+
+
+# ---- Phase 9: provider hardening ------------------------------------------
+
+def test_retry_then_fallback_chain(tmp_path, monkeypatch):
+    from manas.kernel import config
+    from manas.kernel.registry import providers as preg
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    if "flaky" not in preg.names():
+        @preg.register("flaky")
+        class Flaky:
+            async def complete(self, system, messages, model):
+                raise RuntimeError("boom")
+    monkeypatch.setattr(config.settings, "provider_fallbacks", "echo")
+    import manas.providers.base as pb
+    monkeypatch.setattr(pb, "BACKOFF", 0.0)      # fast test
+    out = asyncio.run(pb.complete("s", [{"role": "user", "content": "hi"}],
+                                  provider="flaky"))
+    assert "[echo provider" in out               # degraded gracefully
+    key = (("provider", "flaky"), ("status", "error"))
+    assert pb.LLM_REQS.values[key] >= 3          # retried before falling back
+
+
+def test_routing_by_purpose(monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "routes", "critic=echo:tiny")
+    from manas.providers.base import _route
+    assert _route("critic") == ("echo", "tiny")
+    assert _route("plan") == (None, None)
+
+
+def test_token_and_cost_accounting(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    monkeypatch.setattr(config.settings, "cost_per_mtok", "echo=100:200")
+    import manas.providers.base as pb
+    before = sum(pb.LLM_COST.values.values())
+    asyncio.run(pb.complete("sys " * 100,
+                            [{"role": "user", "content": "hello " * 200}],
+                            provider="echo"))
+    assert sum(pb.LLM_COST.values.values()) > before
+    assert any(k == (("direction", "in"), ("provider", "echo"))
+               for k in pb.LLM_TOKENS.values)
+
+
+def test_echo_streaming_yields_chunks():
+    from manas.providers.base import stream
+
+    async def collect():
+        return [c async for c in stream("s", [{"role": "user",
+                                               "content": "a b c"}],
+                                        provider="echo")]
+    chunks = asyncio.run(collect())
+    assert len(chunks) > 3 and "".join(chunks).strip().endswith("a b c")
+
+
+# ---- Phase 10: computer control -------------------------------------------
+
+def test_desktop_dry_run_plans_without_backend(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.perception.desktop import DesktopControl
+    steps = [{"op": "open_app", "name": "firefox"},
+             {"op": "type", "text": "secret-password"},
+             {"op": "hotkey", "keys": ["ctrl", "s"]}]
+    out = asyncio.run(DesktopControl()(steps=steps, dry_run=True))
+    assert out["dry_run"] and len(out["plan"]) == 3
+    assert all("secret-password" not in p for p in out["plan"])  # never echoed
+
+
+def test_desktop_live_requires_prior_dry_run(tmp_path, monkeypatch):
+    from manas.kernel import config
+    from manas.kernel.errors import ManasError
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.perception import desktop as d
+    monkeypatch.setattr(d, "_previewed", set())
+    class FakeBackend:
+        def __init__(self): self.done = []
+        def do(self, s): self.done.append(s["op"])
+    fb = FakeBackend()
+    steps = [{"op": "move", "x": 1, "y": 2}, {"op": "click"}]
+    with pytest.raises(ManasError):                      # no preview yet
+        asyncio.run(d.DesktopControl(backend=fb)(steps=steps, dry_run=False))
+    asyncio.run(d.DesktopControl(backend=fb)(steps=steps, dry_run=True))
+    out = asyncio.run(d.DesktopControl(backend=fb)(steps=steps, dry_run=False))
+    assert fb.done == ["move", "click"] and not out["dry_run"]
+
+
+def test_desktop_gated_at_toolgate(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    with pytest.raises(ApprovalRequired):
+        asyncio.run(ToolGate().run("assistant", "desktop_control",
+                                   steps=[{"op": "click"}]))
+
+
+# ---- Phase 11: RBAC + encrypted scoped stores -----------------------------
+
+def test_rbac_ceiling_blocks_operator(tmp_path, monkeypatch):
+    from manas.kernel import config
+    from manas.kernel.auth import User
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    op = User(name="lekha", roles=("operator",))
+    gate = ToolGate(approver=lambda a, r: True, user=op)   # approver present…
+    with pytest.raises(ToolDenied):                        # …ceiling still wins
+        asyncio.run(gate.run("qa", "shell", command="echo hi"))
+    # SAFE tool is fine for operator:
+    out = asyncio.run(gate.run("qa", "read_file", path="pyproject.toml"))
+    assert "manas" in out
+
+
+def test_content_encrypted_at_rest(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.memory.scoped import ScopedStore
+    s = ScopedStore("personal")
+    s.write(Record(tier="semantic", content="amit salary details PLAINTEXT"))
+    raw = (tmp_path / "memory" / "personal.db").read_bytes()
+    assert b"PLAINTEXT" not in raw                 # cipher at rest
+    hits = s.recall("salary details")
+    assert hits and "PLAINTEXT" in hits[0].content # decrypts for permitted caller
+
+
+def test_scopes_have_separate_keys_and_files(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.memory.scoped import ScopedStore, _key
+    ScopedStore("personal"); ScopedStore("enterprise")
+    assert _key("personal") != _key("enterprise")
+    assert (tmp_path / "memory" / "personal.db").exists()
+    assert (tmp_path / "memory" / "enterprise.db").exists()
+
+
+def test_cross_store_requires_explicit_grant(tmp_path, monkeypatch):
+    from manas.kernel import config
+    from manas.kernel.auth import User
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.memory.scoped import ScopedStore, recall_across
+    ScopedStore("enterprise").write(
+        Record(tier="semantic", content="hpcm release gate criteria"))
+    with pytest.raises(ToolDenied):                # no grant, no search
+        recall_across("release gate", grant=())
+    limited = User(name="viewer1", roles=("viewer",),
+                   memory_scopes=("personal",))
+    with pytest.raises(ToolDenied):                # scope not held by user
+        recall_across("release gate", grant=("enterprise",), user=limited)
+    hits = recall_across("release gate", grant=("enterprise",))
+    assert hits and "release gate" in hits[0].content
+
+
+# ---- Phase 12: distributed execution --------------------------------------
+
+def test_two_nodes_share_one_graph(tmp_path, monkeypatch):
+    import asyncio as aio
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.kernel.distq import DistWorker, LeaseTable
+    from manas.kernel.taskgraph import Task, TaskGraph
+    a = Task(name="a", agent="assistant", instruction="step a")
+    b = Task(name="b", agent="assistant", instruction="step b",
+             depends_on=[a.id])
+    path = str(TaskGraph(goal="dist demo", tasks=[a, b]).save())
+    leases = LeaseTable()
+    w1, w2 = DistWorker("node-1", leases), DistWorker("node-2", leases)
+    ran1 = aio.run(w1.step(path))                  # node-1 takes 'a'
+    assert ran1 == "a"
+    ran2 = aio.run(w2.step(path))                  # node-2 takes 'b'
+    assert ran2 == "b"
+    assert TaskGraph.load(path).finished()
+
+
+def test_lease_expiry_recovers_from_node_death(tmp_path, monkeypatch):
+    import asyncio as aio
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.kernel.distq import DistWorker, LeaseTable
+    from manas.kernel.taskgraph import Task, TaskGraph
+    t = Task(name="only", agent="assistant", instruction="do it")
+    path = str(TaskGraph(goal="death demo", tasks=[t]).save())
+    leases = LeaseTable()
+    # dead node claimed with an ALREADY-EXPIRED lease and never released:
+    assert leases.claim("ignored", "warmup", "x") in (True, False)
+    g = TaskGraph.load(path)
+    assert leases.claim(g.id, g.tasks[0].id, "dead-node", lease=-5)
+    # a live claim by another node must NOT be stealable while fresh:
+    assert leases.claim(g.id, g.tasks[0].id, "thief", lease=60)  # expired->wins
+    leases.release(g.id, g.tasks[0].id)
+    # now full recovery path: dead claim again, survivor reclaims + completes
+    assert leases.claim(g.id, g.tasks[0].id, "dead-node", lease=-5)
+    survivor = DistWorker("survivor", leases)
+    assert aio.run(survivor.step(path)) == "only"
+    assert TaskGraph.load(path).finished()
+    # fresh lease is protected:
+    g2 = TaskGraph(goal="x", tasks=[Task(name="t", agent="assistant",
+                                         instruction="i")])
+    g2.save()
+    assert leases.claim(g2.id, g2.tasks[0].id, "holder", lease=60)
+    assert not leases.claim(g2.id, g2.tasks[0].id, "thief2", lease=60)
+
+
+# ---- Phase 13: continuous ingestion ---------------------------------------
+
+def test_watcher_reingests_on_change_and_archives_stale(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path / "home")
+    from manas.knowledge.watch import Watcher, add_watch, load_watches
+    from manas.memory import get_store
+    repo = tmp_path / "repo"; repo.mkdir()
+    doc = repo / "notes.md"
+    doc.write_text("# Notes\n\ninitial content about zephyr provider\n")
+    add_watch(str(repo))
+    assert load_watches() == [str(repo)]
+    w = Watcher()
+    first = w.poll_once()                          # first poll ingests baseline
+    assert first[str(repo)]["chunks_new"] >= 1
+    import time as _t; _t.sleep(0.01)
+    doc.write_text("# Notes\n\nrewritten: zephyr disabled by default now\n")
+    reports = w.poll_once()
+    assert reports and reports[str(repo)]["chunks_new"] >= 1
+    assert reports[str(repo)]["chunks_archived"] >= 1
+    active = [r.content for r in get_store().all_active("knowledge")]
+    assert any("disabled by default" in c for c in active)
+    assert not any("initial content" in c for c in active)
+
+
+def test_watcher_quiet_when_nothing_changed(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path / "home")
+    from manas.knowledge.watch import Watcher
+    repo = tmp_path / "repo"; repo.mkdir()
+    (repo / "a.md").write_text("stable")
+    w = Watcher([str(repo)])
+    w.poll_once()                                  # baseline ingest
+    assert w.poll_once() == {}                     # no change -> no ingest
+
+
+# ---- Phase 14: edge & robotics --------------------------------------------
+
+class _FakeMqtt:
+    def __init__(self): self.published = []
+    def publish(self, topic, payload, qos=1): self.published.append((topic, payload))
+    def read(self, topic, timeout=5.0): return "23.5"
+
+
+def test_actuation_impossible_without_human_approver(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    with pytest.raises(ApprovalRequired):          # no approver: hard block
+        asyncio.run(ToolGate().run("robot", "actuate",
+                                   topic="lab/relay1", payload="ON",
+                                   dry_run=False))
+
+
+def test_actuation_dry_run_then_approved_publish(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.integrations.iot import Actuate
+    fb = _FakeMqtt()
+    prompts = []
+    def approver(action, reason):
+        prompts.append((action, reason)); return True
+    gate = ToolGate(approver=approver)
+    # dry run previews without publishing (still human-approved: always_gate)
+    out = asyncio.run(Actuate(backend=fb)(topic="lab/relay1", payload="ON"))
+    assert out["dry_run"] and fb.published == []
+    # live publish via the gate: approver consulted, then real publish
+    from manas.kernel.registry import tools as treg
+    orig = treg._items["actuate"]
+    treg._items["actuate"] = lambda: Actuate(backend=fb)
+    try:
+        out2 = asyncio.run(gate.run("robot", "actuate", topic="lab/relay1",
+                                    payload="ON", dry_run=False))
+    finally:
+        treg._items["actuate"] = orig
+    assert out2 == {"dry_run": False, "published": "lab/relay1"}
+    assert fb.published == [("lab/relay1", "ON")]
+    assert prompts and "PHYSICAL" in prompts[0][1]
+
+
+def test_actuation_rejects_wildcard_topics(tmp_path, monkeypatch):
+    from manas.kernel import config
+    from manas.kernel.errors import ManasError
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.integrations.iot import Actuate
+    with pytest.raises(ManasError):
+        asyncio.run(Actuate(backend=_FakeMqtt())(topic="lab/#", payload="ON"))
+
+
+def test_sensor_read_is_safe_and_gateable(tmp_path, monkeypatch):
+    from manas.kernel import config
+    monkeypatch.setattr(config.settings, "home", tmp_path)
+    from manas.integrations.iot import SensorRead
+    from manas.kernel.registry import tools as treg
+    orig = treg._items["sensor_read"]
+    treg._items["sensor_read"] = lambda: SensorRead(backend=_FakeMqtt())
+    try:                                            # SAFE: no approver needed
+        out = asyncio.run(ToolGate().run("assistant", "sensor_read",
+                                         topic="lab/temp"))
+    finally:
+        treg._items["sensor_read"] = orig
+    assert out["value"] == "23.5" and not out["timed_out"]

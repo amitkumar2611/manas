@@ -1,0 +1,61 @@
+# MANAS on Kubernetes: API + horizontally scaled workers over a shared PVC.
+# The PVC carries ~/.manas (graphs, claims.db, memory) — RWX storage class
+# (NFS/CephFS/EFS) required for multi-node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: manas-data}
+spec:
+  accessModes: [ReadWriteMany]
+  resources: {requests: {storage: 5Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: manas-api}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: manas-api}}
+  template:
+    metadata: {labels: {app: manas-api}}
+    spec:
+      containers:
+        - name: api
+          image: manas:1.4.0
+          ports: [{containerPort: 8420}]
+          env: [{name: MANAS_HOME, value: /data}]
+          volumeMounts: [{name: data, mountPath: /data}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8420}
+          livenessProbe:
+            httpGet: {path: /health, port: 8420}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: manas-data}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: manas-worker}
+spec:
+  replicas: 2                       # scale horizontally; leases coordinate
+  selector: {matchLabels: {app: manas-worker}}
+  template:
+    metadata: {labels: {app: manas-worker}}
+    spec:
+      containers:
+        - name: worker
+          image: manas:1.4.0
+          command: ["manas", "worker", "--all", "--node-id", "$(POD_NAME)"]
+          env:
+            - {name: MANAS_HOME, value: /data}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+          volumeMounts: [{name: data, mountPath: /data}]
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: manas-data}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: manas}
+spec:
+  selector: {app: manas-api}
+  ports: [{port: 8420, targetPort: 8420}]

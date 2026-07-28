@@ -8,6 +8,7 @@ from typing import Any, Callable
 from manas.kernel import audit
 from manas.kernel.errors import ApprovalRequired, ToolDenied
 from manas.kernel.metrics import TOOL_LAT, TOOL_RUNS
+from manas.kernel.auth import SYSTEM_USER, User
 from manas.kernel.registry import tools
 from manas.kernel.trace import span
 
@@ -16,13 +17,16 @@ RISK = {"SAFE": 0, "REVIEW": 1, "APPROVAL": 2}
 
 
 class ToolGate:
-    def __init__(self, approver: Callable[[str, str], bool] | None = None) -> None:
+    def __init__(self, approver: Callable[[str, str], bool] | None = None,
+                 user: User = SYSTEM_USER) -> None:
         # approver(action, reason) -> bool. None = deny anything needing approval.
         self.approver = approver
+        self.user = user
 
     async def run(self, agent: str, tool_name: str, **kwargs: Any) -> Any:
-        tool = tools.get(tool_name)
-        risk: str = getattr(tool, "risk_level", "APPROVAL")
+        tool = tools.get(tool_name)()      # instantiate FIRST: risk metadata
+        risk: str = getattr(tool, "risk_level", "APPROVAL")  # lives on instances
+        self.user.check_tool(tool_name, risk)      # RBAC ceiling (always runs)
 
         blob = " ".join(str(v) for v in kwargs.values())
         if any(bad in blob for bad in DENYLIST):
@@ -31,6 +35,11 @@ class ToolGate:
             raise ToolDenied(f"denylist match in args for {tool_name}")
 
         approved_by = None
+        if getattr(tool, "always_gate", False) and self.approver is None:
+            audit.record(agent, tool_name, kwargs, risk, None, "BLOCKED")
+            raise ApprovalRequired(
+                tool_name, "hard-gated tool: a human approver callable is "
+                           "mandatory for every invocation")
         if RISK[risk] >= RISK["APPROVAL"]:
             reason = getattr(tool, "approval_reason", "irreversible action")
             if not self.approver:
@@ -44,7 +53,7 @@ class ToolGate:
         t0 = time.time()
         try:
             with span("tool.run", tool=tool_name, agent=agent, risk=risk):
-                result = await tool()(**kwargs)
+                result = await tool(**kwargs)
             audit.record(agent, tool_name, kwargs, risk, approved_by, "OK")
             TOOL_RUNS.inc(tool=tool_name, status="ok")
             return result

@@ -194,6 +194,44 @@ def calendar_add(summary: str, start_iso: str, duration_min: int = 30,
 
 
 @app.command()
+def worker(graph: str = typer.Argument(""), node_id: str = "node-1",
+           all: bool = typer.Option(False, "--all",
+                                    help="serve every graph in ~/.manas/plans")) -> None:
+    """Run a distributed worker node (lease-coordinated, safe to scale out)."""
+    from manas.kernel.distq import DistWorker
+    w = DistWorker(node_id)
+    if graph:
+        g = asyncio.run(w.run_until_done(graph))
+        _render_graph(g)
+        return
+    if not all:
+        console.print("give a graph path or --all"); raise typer.Exit(1)
+    import time as _t
+    console.print(f"[dim]worker {node_id} polling ~/.manas/plans[/]")
+    while True:
+        for f in sorted((settings.home / "plans").glob("graph-*.json")):
+            asyncio.run(w.step(str(f)))
+        _t.sleep(1)
+
+
+@app.command()
+def watch(path: str = typer.Argument(""), interval: float = 5.0,
+          once: bool = typer.Option(False, "--once",
+                                    help="single poll cycle then exit")) -> None:
+    """Continuously re-ingest a path on change (stale chunks auto-archived)."""
+    from manas.knowledge.watch import Watcher, add_watch
+    if path:
+        add_watch(path)
+    w = Watcher()
+    if not w.paths:
+        console.print("nothing to watch — give a path"); raise typer.Exit(1)
+    if once:
+        console.print(w.poll_once() or "no changes")
+        return
+    w.run_forever(interval)
+
+
+@app.command()
 def doctor() -> None:
     """Deep health checks across every layer (exit 1 if any fail)."""
     from manas.kernel.health import run_checks

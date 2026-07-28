@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     wake_word: str = "manas"
     stt_model: str = "base"                       # faster-whisper model size
     calendar_dir: str = ""                        # blank -> ~/.manas/calendar
+    # -- Phase 9 provider hardening --
+    provider_fallbacks: str = ""                  # e.g. "ollama,echo"
+    routes: str = ""                              # e.g. "critic=ollama:llama3.1"
+    cost_per_mtok: str = "anthropic=3:15,copilot=0:0,ollama=0:0,echo=0:0"
+    # -- Phase 11 RBAC + scoped stores --
+    personal_key: str = ""                        # blank -> autogen ~/.manas/keys
+    enterprise_key: str = ""
+    # -- Phase 14 edge/IoT --
+    mqtt_broker: str = "localhost:1883"
+    mqtt_user: str = ""
+    mqtt_pass: str = ""
 
     def ensure_dirs(self) -> None:
         for sub in ("memory", "audit", "plans"):
